@@ -9,14 +9,15 @@ const crypto = require('crypto');
 
 const { createJob, getJob, deleteJob, jobs: jobsMap } = require('./lib/jobStore');
 const { runScan } = require('./lib/scanner');
-const { confirmJob, undoRun } = require('./lib/mover');
+const { buildPlan, executePlan, undoRun } = require('./lib/mover');
 const { knownCategories } = require('./lib/categorize');
 const { testConnection, DEFAULT_URL, DEFAULT_MODEL } = require('./lib/llm');
 const { listDrives } = require('./lib/drives');
 const { learnRule, getAllRules, deleteRule } = require('./lib/learnedRules');
 const { sharpAvailable } = require('./lib/perceptualHash');
 const persistence = require('./lib/persistence');
-const { snapshotTreesToFile } = require('./lib/treeSnapshot');
+const { snapshotTreesToFile, streamSnapshot } = require('./lib/treeSnapshot');
+const { logJob } = require('./lib/jobLog');
 
 const app = express();
 app.use(express.json());
@@ -90,8 +91,9 @@ app.delete('/api/rules/:ext', async (req, res) => {
 // ---------- Scan lifecycle ----------
 
 app.get('/api/scan', (req, res) => {
+  const RESUMABLE = new Set(['done', 'scanning', 'moving', 'pending']);
   const list = [...jobsMap.values()]
-    .filter((j) => j.status === 'done' || j.status === 'scanning')
+    .filter((j) => RESUMABLE.has(j.status))
     .map((j) => ({ id: j.id, status: j.status, sources: j.sources, destination: j.destination, fileCount: j.files.size, createdAt: j.createdAt }));
   res.json({ jobs: list });
 });
@@ -161,7 +163,18 @@ app.post('/api/scan', async (req, res) => {
 app.get('/api/scan/:jobId/status', (req, res) => {
   const job = getJob(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  res.json({ status: job.status, progress: job.progress, error: job.error });
+  res.json({
+    status: job.status,
+    progress: job.progress,
+    error: job.error,
+    log: (job.log || []).slice(-200),
+    runId: job.runId || null,
+    // Once a move finishes, hand the report straight back through the poll so the
+    // frontend can render the report view without a second round-trip.
+    report: job.status === 'completed' ? job.report : null,
+    treeBeforeStats: job.treeBeforeStats || null,
+    treeAfterStats: job.treeAfterStats || null,
+  });
 });
 
 function serializeJob(job) {
@@ -350,48 +363,92 @@ app.put('/api/scan/:jobId/duplicates/:groupId', (req, res) => {
 
 // ---------- Confirm & execute ----------
 
-app.post('/api/scan/:jobId/confirm', async (req, res) => {
-  const job = getJob(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
-  if (job.status !== 'done') return res.status(400).json({ error: 'Job is not ready to confirm yet' });
-
-  job.status = 'moving';
+/**
+ * Runs the actual move in the background so the frontend can poll for live
+ * progress and a log. Fully journaled and crash-resumable: the resolved plan is
+ * written before any file is touched, each op's outcome is journaled as it
+ * completes, and the undo manifest is written the moment the moves finish.
+ */
+async function runMove(job, runId) {
   try {
-    const runId = await persistence.createRun();
+    job.progress = { phase: 'planning', moved: 0, total: 0 };
+    logJob(job, 'Building the move plan…');
+    const plan = await buildPlan(job);
+    await persistence.savePlan(runId, {
+      ...plan, jobId: job.id, sources: job.sources, destination: job.destination, createdAt: Date.now(),
+    });
+    job.progress = { phase: 'snapshotting_before', moved: 0, total: plan.ops.length };
+    logJob(job, `Plan ready: ${plan.ops.length} operation(s). Snapshotting source structure…`);
+    persistence.saveJobSnapshot(job);
 
-    // Full snapshot of every source folder exactly as it stands right before we
-    // touch anything - this is the "no matter how big" record the rollback and
-    // any manual recovery would rely on.
-    job.progress.phase = 'snapshotting_before';
-    const treeBeforeStats = await snapshotTreesToFile(job.sources, persistence.treeBeforePath(runId));
+    let treeBeforeStats = null;
+    try {
+      treeBeforeStats = await snapshotTreesToFile(job.sources, persistence.treeBeforePath(runId));
+    } catch (snapErr) {
+      logJob(job, `Before-snapshot failed (continuing): ${snapErr.message}`, 'warn');
+    }
 
-    const report = await confirmJob(job);
+    job.progress.phase = 'moving';
+    logJob(job, 'Moving files…');
+    const report = await executePlan(plan, {
+      appendJournal: (entry) => persistence.appendJournalEntry(runId, entry),
+      onProgress: (processed, total) => {
+        job.progress.moved = processed;
+        job.progress.total = total;
+        if (processed === total || processed % 25 === 0) {
+          logJob(job, `${processed}/${total} operation(s) done…`);
+          persistence.saveJobSnapshot(job);
+        }
+      },
+    });
     job.report = report;
-    job.status = 'completed';
 
-    // The files have already moved. Persist the undo manifest IMMEDIATELY, before
-    // anything else can throw - rollback depends entirely on manifest.report.moved,
-    // so a crash/full-disk after this point must still leave a reversible record.
+    // Persist the undo manifest IMMEDIATELY (rollback depends only on this).
+    job.progress.phase = 'finalizing';
     let manifest = await persistence.saveManifest(runId, { job, report, treeBeforeStats, treeAfterStats: null });
     await persistence.deleteJobSnapshot(job.id);
 
-    // The after-snapshot is for user inspection only (it does not power rollback),
-    // so it is best-effort: a failure here must not lose the fact that the run
-    // completed and is already recorded and reversible.
+    // After-snapshot is inspection-only and therefore best-effort.
     let treeAfterStats = null;
     try {
       job.progress.phase = 'snapshotting_after';
       treeAfterStats = await snapshotTreesToFile([job.destination], persistence.treeAfterPath(runId));
       manifest = await persistence.saveManifest(runId, { job, report, treeBeforeStats, treeAfterStats });
     } catch (snapErr) {
-      console.error('After-snapshot failed (run is still recorded and reversible):', snapErr.message);
+      logJob(job, `After-snapshot failed (run still recorded and reversible): ${snapErr.message}`, 'warn');
     }
-    res.json({ ok: true, report, runId: manifest.id, treeBeforeStats, treeAfterStats });
+
+    job.treeBeforeStats = treeBeforeStats;
+    job.treeAfterStats = treeAfterStats;
+    job.runId = manifest.id;
+    job.status = 'completed';
+    job.progress.phase = 'done';
+    const deletedTotal = report.deleted.length + report.deletedDirs.length + report.deletedFiles.length;
+    logJob(job, `Done. Moved ${report.moved.length}, deleted ${deletedTotal}, errors ${report.errors.length}.`);
   } catch (err) {
     job.status = 'error';
     job.error = err.message;
-    res.status(500).json({ error: err.message });
+    logJob(job, `Move failed: ${err.message}`, 'error');
+    persistence.saveJobSnapshot(job);
   }
+}
+
+app.post('/api/scan/:jobId/confirm', async (req, res) => {
+  const job = getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (job.status !== 'done') return res.status(400).json({ error: 'Job is not ready to confirm yet' });
+
+  job.status = 'moving';
+  job.progress = { phase: 'planning', moved: 0, total: 0 };
+  const runId = await persistence.createRun();
+  job.runId = runId;
+  logJob(job, 'Confirm received.');
+  persistence.saveJobSnapshot(job);
+
+  // Respond immediately; the client polls /status for progress + log and the final report.
+  res.json({ ok: true, runId, started: true });
+
+  runMove(job, runId);
 });
 
 app.delete('/api/scan/:jobId', async (req, res) => {
@@ -418,16 +475,24 @@ app.get('/api/runs/:runId', async (req, res) => {
   }
 });
 
+async function serveSnapshot(indexFile, res) {
+  try {
+    const served = await streamSnapshot(indexFile, res);
+    if (!served && !res.headersSent) res.status(404).json({ error: 'Snapshot not found' });
+  } catch (err) {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else res.end();
+  }
+}
+
+// Reconstructs the (possibly chunked) snapshot into one logical JSON tree, streamed
+// chunk-by-chunk so the server never buffers a giant file in memory.
 app.get('/api/runs/:runId/tree/before', (req, res) => {
-  res.sendFile(persistence.treeBeforePath(req.params.runId), (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: 'Snapshot not found' });
-  });
+  serveSnapshot(persistence.treeBeforePath(req.params.runId), res);
 });
 
 app.get('/api/runs/:runId/tree/after', (req, res) => {
-  res.sendFile(persistence.treeAfterPath(req.params.runId), (err) => {
-    if (err && !res.headersSent) res.status(404).json({ error: 'Snapshot not found' });
-  });
+  serveSnapshot(persistence.treeAfterPath(req.params.runId), res);
 });
 
 app.post('/api/runs/:runId/undo', async (req, res) => {
@@ -447,20 +512,93 @@ app.post('/api/runs/:runId/undo', async (req, res) => {
   }
 });
 
-// ---------- Startup: resume any jobs left mid-review from a previous server run ----------
+// ---------- Startup: resume anything left unfinished by a crash/power loss ----------
+
+/**
+ * Finishes any move that was interrupted mid-flight. A run with a plan but no
+ * manifest is incomplete: we replay only the ops the journal hasn't marked done
+ * (execution is idempotent for the rest), then write the manifest so the run
+ * becomes fully recorded and reversible - exactly as if it had never stopped.
+ */
+async function resumeIncompleteRuns() {
+  let incomplete = [];
+  try {
+    incomplete = await persistence.listIncompleteRuns();
+  } catch {
+    return;
+  }
+  for (const runId of incomplete) {
+    const plan = await persistence.loadPlan(runId);
+    if (!plan || !Array.isArray(plan.ops)) continue;
+    try {
+      const journal = await persistence.loadJournal(runId);
+      const done = new Set([...journal.entries()].filter(([, s]) => s === 'done').map(([i]) => i));
+      console.log(`Resuming interrupted move ${runId}: ${done.size}/${plan.ops.length} op(s) already applied.`);
+
+      const job = jobsMap.get(plan.jobId);
+      if (job) { job.status = 'moving'; job.runId = runId; job.progress = { phase: 'moving', moved: done.size, total: plan.ops.length }; logJob(job, 'Resuming interrupted move after restart…', 'warn'); }
+
+      const report = await executePlan(plan, {
+        journalCompleted: done,
+        appendJournal: (entry) => persistence.appendJournalEntry(runId, entry),
+        onProgress: (processed, total) => {
+          if (job) { job.progress.moved = processed; job.progress.total = total; }
+        },
+      });
+
+      const pseudoJob = { id: plan.jobId, sources: plan.sources || [], destination: plan.destination };
+      let treeAfterStats = null;
+      await persistence.saveManifest(runId, { job: pseudoJob, report, treeBeforeStats: null, treeAfterStats: null });
+      try {
+        treeAfterStats = await snapshotTreesToFile([plan.destination], persistence.treeAfterPath(runId));
+        await persistence.saveManifest(runId, { job: pseudoJob, report, treeBeforeStats: null, treeAfterStats });
+      } catch { /* inspection-only */ }
+
+      if (job) {
+        job.report = report;
+        job.treeAfterStats = treeAfterStats;
+        job.status = 'completed';
+        job.progress.phase = 'done';
+        logJob(job, `Resumed move finished. Moved ${report.moved.length}, errors ${report.errors.length}.`);
+        await persistence.deleteJobSnapshot(job.id);
+      }
+      console.log(`Resumed move ${runId} completed: moved ${report.moved.length}, errors ${report.errors.length}.`);
+    } catch (err) {
+      console.error(`Failed to resume move ${runId}:`, err.message);
+    }
+  }
+}
 
 async function bootstrap() {
   const savedJobs = await persistence.loadAllJobSnapshots();
   for (const job of savedJobs) {
     jobsMap.set(job.id, job);
   }
+
+  for (const job of savedJobs) {
+    if (job.status === 'scanning' || job.status === 'pending') {
+      // A scan is read-only, so re-running it from scratch is always safe.
+      logJob(job, 'Resuming interrupted scan after restart.', 'warn');
+      job.status = 'scanning';
+      runScan(job).then(() => persistence.saveJobSnapshot(job)).catch(() => {});
+    } else if (job.status === 'moving') {
+      // If no plan hit disk, nothing was moved yet - make it re-confirmable.
+      if (!job.runId || !(await persistence.planExists(job.runId))) {
+        job.status = 'done';
+        logJob(job, 'Interrupted before any file moved - ready to confirm again.', 'warn');
+        persistence.saveJobSnapshot(job);
+      }
+      // Otherwise resumeIncompleteRuns() below finishes it.
+    }
+  }
   if (savedJobs.length > 0) {
-    console.log(`Resumed ${savedJobs.length} in-progress scan(s) from the last session.`);
+    console.log(`Loaded ${savedJobs.length} in-progress job(s) from the last session.`);
   }
 
   const PORT = process.env.PORT || 4173;
   app.listen(PORT, () => {
     console.log(`Folder Organizer running at http://localhost:${PORT}`);
+    resumeIncompleteRuns().catch((err) => console.error('Resume sweep failed:', err.message));
   });
 }
 

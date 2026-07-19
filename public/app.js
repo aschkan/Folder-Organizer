@@ -121,16 +121,25 @@ async function checkResumableJobs() {
     const { jobs } = await api('GET', '/api/scan');
     if (!jobs || jobs.length === 0) return;
     const j = jobs[jobs.length - 1];
+    const statusLabel = j.status === 'moving' ? 'a move is in progress' :
+      j.status === 'scanning' ? 'scanning' :
+      j.status === 'completed' ? 'finished' : 'waiting for review';
     $('#resume-text').textContent =
-      `A scan of ${j.sources.length} source folder${j.sources.length === 1 ? '' : 's'} → ${j.destination} ` +
-      `(${j.fileCount} files, status: ${j.status}) is waiting for review.`;
+      `A run over ${j.sources.length} source folder${j.sources.length === 1 ? '' : 's'} → ${j.destination} ` +
+      `(${j.fileCount} files, ${statusLabel}) can be resumed.`;
     $('#resume-banner').classList.remove('hidden');
     $('#btn-resume').onclick = async () => {
       jobId = j.id;
       $('#resume-banner').classList.add('hidden');
-      if (j.status === 'scanning') {
+      if (j.status === 'scanning' || j.status === 'moving' || j.status === 'pending') {
+        renderLog([]);
         showView('progress');
         pollStatus();
+      } else if (j.status === 'completed') {
+        const status = await api('GET', `/api/scan/${jobId}/status`);
+        lastRunId = status.runId;
+        renderReport(status.report, status.runId, status.treeBeforeStats, status.treeAfterStats);
+        showView('report');
       } else {
         await loadResults();
       }
@@ -260,31 +269,73 @@ $('#btn-start-scan').addEventListener('click', async () => {
   }
 });
 
+const PHASE_LABELS = {
+  pending: 'Getting ready…',
+  listing: 'Listing files & detecting projects…',
+  categorizing: 'Categorizing files…',
+  metadata: 'Reading photo/music metadata…',
+  hashing: 'Checking for duplicates…',
+  similarity: 'Comparing photos for near-duplicates…',
+  planning: 'Building the move plan…',
+  snapshotting_before: 'Snapshotting your folders (for rollback)…',
+  moving: 'Moving files…',
+  finalizing: 'Recording the run…',
+  snapshotting_after: 'Snapshotting the result…',
+  done: 'Finishing up…',
+};
+
+function renderLog(entries) {
+  const el = $('#progress-log');
+  if (!el) return;
+  const list = entries || [];
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.innerHTML = list.map((e) => {
+    const time = new Date(e.t).toLocaleTimeString();
+    const cls = e.level === 'error' ? 'log-error' : (e.level === 'warn' ? 'log-warn' : '');
+    return `<div class="log-line ${cls}"><span class="log-time">${time}</span>${escapeHtml(e.msg)}</div>`;
+  }).join('');
+  $('#progress-log-count').textContent = list.length ? `${list.length} event(s)` : '';
+  if (nearBottom) el.scrollTop = el.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
 async function pollStatus() {
   clearTimeout(pollTimer);
   try {
     const status = await api('GET', `/api/scan/${jobId}/status`);
     const phase = status.progress?.phase || status.status;
-    $('#progress-phase').textContent = {
-      pending: 'Getting ready…',
-      listing: 'Listing files & detecting projects…',
-      categorizing: 'Categorizing files…',
-      metadata: 'Reading photo/music metadata…',
-      hashing: 'Checking for duplicates…',
-      similarity: 'Comparing photos for near-duplicates…',
-      done: 'Finishing up…',
-    }[phase] || 'Working…';
+    const isMoving = status.status === 'moving' || ['planning', 'snapshotting_before', 'moving', 'finalizing', 'snapshotting_after'].includes(phase);
 
-    const found = status.progress?.filesFound || 0;
-    const processed = status.progress?.filesProcessed || 0;
-    const pct = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : (phase === 'listing' ? 5 : 0);
-    $('#progress-fill').style.width = `${pct}%`;
-    $('#progress-text').textContent = `${found} file${found === 1 ? '' : 's'} found${processed ? `, ${processed} categorized` : ''}`;
+    $('#progress-phase').textContent = PHASE_LABELS[phase] || (isMoving ? 'Moving files…' : 'Working…');
+    renderLog(status.log);
 
-    if (status.status === 'done') {
+    if (isMoving) {
+      const moved = status.progress?.moved || 0;
+      const total = status.progress?.total || 0;
+      const pct = total > 0 ? Math.min(100, Math.round((moved / total) * 100)) : 5;
+      $('#progress-fill').style.width = `${pct}%`;
+      $('#progress-text').textContent = total > 0 ? `${moved} / ${total} operations` : 'Preparing…';
+    } else {
+      const found = status.progress?.filesFound || 0;
+      const processed = status.progress?.filesProcessed || 0;
+      const pct = found > 0 ? Math.min(100, Math.round((processed / found) * 100)) : (phase === 'listing' ? 5 : 0);
+      $('#progress-fill').style.width = `${pct}%`;
+      $('#progress-text').textContent = `${found} file${found === 1 ? '' : 's'} found${processed ? `, ${processed} categorized` : ''}`;
+    }
+
+    if (status.status === 'completed') {
+      // A move finished - the report came back with the poll.
+      lastRunId = status.runId || lastRunId;
+      renderReport(status.report, status.runId, status.treeBeforeStats, status.treeAfterStats);
+      showView('report');
+    } else if (status.status === 'done') {
       await loadResults();
     } else if (status.status === 'error') {
-      showToast(`Scan failed: ${status.error}`, true);
+      showToast(`Failed: ${status.error}`, true);
+      renderLog(status.log);
       showView('setup');
     } else {
       pollTimer = setTimeout(pollStatus, 700);
@@ -764,10 +815,15 @@ $('#btn-confirm-move').addEventListener('click', async () => {
   if (!confirm('This will move files out of your source folders into the destination. A full folder-structure snapshot is saved first so you can roll back afterward. Continue?')) return;
   try {
     $('#btn-confirm-move').disabled = true;
-    const { report, runId, treeBeforeStats, treeAfterStats } = await api('POST', `/api/scan/${jobId}/confirm`, {});
+    const { runId } = await api('POST', `/api/scan/${jobId}/confirm`, {});
     lastRunId = runId;
-    renderReport(report, runId, treeBeforeStats, treeAfterStats);
-    showView('report');
+    // The move runs in the background and is crash-resumable; watch it via the log + progress.
+    $('#progress-phase').textContent = 'Moving files…';
+    $('#progress-fill').style.width = '0%';
+    $('#progress-text').textContent = 'Preparing…';
+    renderLog([]);
+    showView('progress');
+    pollStatus();
   } catch (err) {
     showToast(err.message, true);
   } finally {

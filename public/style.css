@@ -210,6 +210,24 @@ input[type="text"], input[type="url"] {
 .progress-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); transition: width 0.3s; }
 .progress-text { color: var(--text-dim); font-size: 0.82rem; margin-top: 8px; }
 
+/* Activity log */
+.activity-log {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.activity-log .log-line { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.activity-log .log-time { color: var(--text-dim); margin-right: 10px; }
+.activity-log .log-warn { color: #e6c07f; }
+.activity-log .log-error { color: var(--red); }
+.activity-log:empty::after { content: 'Waiting for activity…'; color: var(--text-dim); }
+
 /* Results */
 .category-block { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
 .category-header {

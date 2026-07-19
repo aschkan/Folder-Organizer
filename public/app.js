@@ -429,7 +429,7 @@ function renderProjects() {
         <div><span class="p-name">${p.name}</span><span class="p-type">${p.type}</span></div>
         <label class="p-exclude"><input type="checkbox" class="proj-exclude" ${p.excluded ? 'checked' : ''}> Leave in source (don't move)</label>
       </div>
-      <div class="p-meta">${p.relPath} &middot; ~${formatSize(p.sizeBytes)} &middot; marker: ${p.markerFile}</div>
+      <div class="p-meta">${p.relPath} &middot; ~${formatSize(p.sizeBytes)} &middot; marker: ${p.markerFile} &middot; &rarr; ${(p.destCategory || 'coded_programs').replace(/_/g, ' ')}/</div>
       ${junkSummary ? `<div class="p-junk">Will delete: ${junkSummary}</div>` : ''}
     `;
     card.querySelector('.proj-exclude').addEventListener('change', async (e) => {

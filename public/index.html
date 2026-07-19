@@ -46,12 +46,12 @@
     </div>
 
     <div class="panel">
-      <h2>Code projects</h2>
+      <h2>Programs &amp; applications</h2>
       <div class="toggle-row">
         <input type="checkbox" id="detect-projects" checked />
-        <label for="detect-projects">Detect code project folders (has <code>package.json</code>, <code>requirements.txt</code>, <code>.git</code>, etc.) and copy them <strong>intact</strong> instead of splitting their files apart</label>
+        <label for="detect-projects">Detect code projects (<code>package.json</code>, <code>.git</code>, etc.) <em>and</em> self-contained applications (folders of <code>.exe</code>/<code>.dll</code>, portable apps, browsers, emulators, games) and move them <strong>intact</strong> instead of splitting their files apart</label>
       </div>
-      <div class="empty-hint">Recommended: on. Without this, a Node.js or Python project's files would get scattered across "code", "documents", "others", etc. and stop working. Detected projects land in one <code>coded_programs</code> folder, each in its own subfolder, structure preserved.</div>
+      <div class="empty-hint">Recommended: on. Without this, a program like a portable browser or a Node.js project would get scattered across "code", "others", etc. and stop working. Detected units land intact in <code>coded_programs/</code> or <code>applications/</code>. With the local LLM enabled below, unusual program folders that don't have an obvious <code>.exe</code>/<code>.dll</code> are recognized too.</div>
     </div>
 
     <div class="panel">
@@ -148,8 +148,8 @@
     </div>
 
     <div id="projects-panel" class="panel hidden">
-      <h2>Detected code projects <span class="count" id="proj-count">0</span></h2>
-      <div class="empty-hint" style="margin-bottom:10px;">These will be copied intact into <code>coded_programs/</code>, not split into other categories. Uncheck any you'd rather leave untouched.</div>
+      <h2>Detected programs &amp; applications <span class="count" id="proj-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">Code projects and self-contained applications (portable apps, browsers, emulators, games&hellip;) are moved <strong>intact</strong> into their own folder &mdash; never split across categories, which would break them. Uncheck any you'd rather leave untouched.</div>
       <div id="projects-list"></div>
     </div>
 

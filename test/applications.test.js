@@ -43,6 +43,43 @@ test('detectApplicationFolder: a plain media folder is not an application', () =
   assert.equal(sig, null);
 });
 
+test('detectApplicationFolder: a big container with one stray .exe is NOT an application', () => {
+  // e.g. a Desktop full of project folders that happens to contain one Dumpper.exe
+  const spec = { 'Dumpper.exe': 'file', 'notes.txt': 'file' };
+  for (let i = 0; i < 8; i++) spec[`project${i}`] = 'dir';
+  const sig = detectApplicationFolder(dirents(spec), 'Desktop');
+  assert.equal(sig, null, 'a folder of many subfolders + one exe must not be locked as one app');
+});
+
+test('detectApplicationFolder: many unrelated loose files + one exe is NOT an application', () => {
+  const spec = { 'tool.exe': 'file' };
+  for (let i = 0; i < 25; i++) spec[`doc${i}.pdf`] = 'file';
+  assert.equal(detectApplicationFolder(dirents(spec), 'stuff'), null);
+});
+
+test('a source root with a stray .exe is scanned normally, not swallowed as one application', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'fo-root-'));
+  await fsp.writeFile(path.join(root, 'Dumpper.exe'), 'MZ');
+  await fsp.mkdir(path.join(root, 'docs'), { recursive: true });
+  await fsp.writeFile(path.join(root, 'docs', 'a.txt'), 'a');
+  await fsp.writeFile(path.join(root, 'docs', 'b.txt'), 'b');
+  await fsp.mkdir(path.join(root, 'pics'), { recursive: true });
+  await fsp.writeFile(path.join(root, 'pics', 'x.jpg'), 'img');
+
+  const job = {
+    id: 'r', sources: [root], destination: path.join(root, '__dest'),
+    useLLM: false, ignoreNodeModules: true, ignoreJunkFolders: true,
+    detectProjects: true, detectThemedFolders: false,
+    organizeByDate: false, organizeByMusicTags: false, findSimilarImages: false,
+  };
+  await runScan(job);
+
+  assert.equal(job.projects.length, 0, 'the whole root must NOT be treated as one application');
+  assert.equal(job.files.size, 4, 'every file (incl. the .exe) is scanned individually');
+  const exe = [...job.files.values()].find((f) => f.name === 'Dumpper.exe');
+  assert.equal(exe.category, 'executables');
+});
+
 test('action-cam / proxy video formats now categorize as video, not others', () => {
   assert.equal(categorizeByExtension('VID_001.insv'), 'video');
   assert.equal(categorizeByExtension('VID_001.lrv'), 'video');

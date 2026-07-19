@@ -369,12 +369,23 @@ app.post('/api/scan/:jobId/confirm', async (req, res) => {
     job.report = report;
     job.status = 'completed';
 
-    // Full snapshot of the resulting destination structure after the move.
-    job.progress.phase = 'snapshotting_after';
-    const treeAfterStats = await snapshotTreesToFile([job.destination], persistence.treeAfterPath(runId));
-
-    const manifest = await persistence.saveManifest(runId, { job, report, treeBeforeStats, treeAfterStats });
+    // The files have already moved. Persist the undo manifest IMMEDIATELY, before
+    // anything else can throw - rollback depends entirely on manifest.report.moved,
+    // so a crash/full-disk after this point must still leave a reversible record.
+    let manifest = await persistence.saveManifest(runId, { job, report, treeBeforeStats, treeAfterStats: null });
     await persistence.deleteJobSnapshot(job.id);
+
+    // The after-snapshot is for user inspection only (it does not power rollback),
+    // so it is best-effort: a failure here must not lose the fact that the run
+    // completed and is already recorded and reversible.
+    let treeAfterStats = null;
+    try {
+      job.progress.phase = 'snapshotting_after';
+      treeAfterStats = await snapshotTreesToFile([job.destination], persistence.treeAfterPath(runId));
+      manifest = await persistence.saveManifest(runId, { job, report, treeBeforeStats, treeAfterStats });
+    } catch (snapErr) {
+      console.error('After-snapshot failed (run is still recorded and reversible):', snapErr.message);
+    }
     res.json({ ok: true, report, runId: manifest.id, treeBeforeStats, treeAfterStats });
   } catch (err) {
     job.status = 'error';
@@ -426,8 +437,11 @@ app.post('/api/runs/:runId/undo', async (req, res) => {
       return res.status(400).json({ error: 'This run was already undone.' });
     }
     const result = await undoRun(manifest);
-    await persistence.markRunUndone(req.params.runId);
-    res.json({ ok: true, result });
+    // A run only counts as fully undone when every recorded move was reversed.
+    // Otherwise we leave it retryable (undoneAt stays null) and report the truth.
+    const fullyUndone = result.errors.length === 0 && result.notRestorable.length === 0;
+    await persistence.markRunUndone(req.params.runId, result, fullyUndone);
+    res.json({ ok: true, result, fullyUndone });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

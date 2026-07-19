@@ -274,6 +274,7 @@ const PHASE_LABELS = {
   listing: 'Listing files & detecting projects…',
   categorizing: 'Categorizing files…',
   metadata: 'Reading photo/music metadata…',
+  polishing: 'Asking the LLM to review & polish every file…',
   hashing: 'Checking for duplicates…',
   similarity: 'Comparing photos for near-duplicates…',
   planning: 'Building the move plan…',

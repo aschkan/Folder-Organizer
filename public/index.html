@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Folder Organizer</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div>
+      <h1>Folder <span class="accent">Organizer</span></h1>
+      <div class="subtitle">Scan, categorize, and sort your files &mdash; local &amp; on your machine only</div>
+    </div>
+    <button class="btn btn-small" id="btn-open-history">History &amp; Rollback</button>
+  </header>
+
+  <!-- SETUP VIEW -->
+  <div id="view-setup">
+    <div id="resume-banner" class="panel hidden">
+      <h2>Resume previous session</h2>
+      <div class="empty-hint" id="resume-text" style="margin-bottom:10px;"></div>
+      <div class="actions-row">
+        <button class="btn btn-primary" id="btn-resume">Resume review</button>
+        <button class="btn" id="btn-dismiss-resume">Dismiss</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Source folders <span class="count" id="source-count">0</span></h2>
+      <div id="source-list"></div>
+      <div class="empty-hint" id="source-empty">No source folders added yet.</div>
+      <div class="actions-row">
+        <button class="btn" id="btn-add-source">+ Add source folder</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Destination folder</h2>
+      <div id="destination-list"></div>
+      <div class="empty-hint" id="destination-empty">No destination folder selected yet.</div>
+      <div class="actions-row">
+        <button class="btn" id="btn-choose-destination">Choose destination folder</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Code projects</h2>
+      <div class="toggle-row">
+        <input type="checkbox" id="detect-projects" checked />
+        <label for="detect-projects">Detect code project folders (has <code>package.json</code>, <code>requirements.txt</code>, <code>.git</code>, etc.) and copy them <strong>intact</strong> instead of splitting their files apart</label>
+      </div>
+      <div class="empty-hint">Recommended: on. Without this, a Node.js or Python project's files would get scattered across "code", "documents", "others", etc. and stop working. Detected projects land in one <code>coded_programs</code> folder, each in its own subfolder, structure preserved.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Human-organized folders</h2>
+      <div class="toggle-row">
+        <input type="checkbox" id="detect-themed-folders" checked />
+        <label for="detect-themed-folders">Detect folders you already organized yourself (e.g. "2026 Birthday Photos", "Home Rent Documents") and keep them as a folder in the matching category, instead of dumping every photo/document loose</label>
+      </div>
+      <div class="empty-hint">If a folder is mostly one file type but has a few things that don't belong (say, a stray PDF mixed into a photo folder), only that stray file gets pulled out and sorted correctly &mdash; the folder itself moves in as one clean unit, e.g. <code>images/2026 Birthday Photos/</code>.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Cleanup options</h2>
+      <div class="toggle-row">
+        <input type="checkbox" id="ignore-node-modules" />
+        <label for="ignore-node-modules"><code>node_modules</code> folders &mdash; delete instead of copying (applies inside detected projects too)</label>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="ignore-junk-folders" />
+        <label for="ignore-junk-folders">Other build/cache junk &mdash; <code>__pycache__</code>, <code>.venv</code>, <code>dist</code>, <code>build</code>, <code>.next</code>, <code>target</code>, <code>.pytest_cache</code> and OS files like <code>.DS_Store</code>/<code>Thumbs.db</code></label>
+      </div>
+      <div class="empty-hint">These are skipped during scanning and permanently deleted from the source when you confirm &mdash; never copied to the destination.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Smart organization</h2>
+      <div class="toggle-row">
+        <input type="checkbox" id="organize-by-date" />
+        <label for="organize-by-date">Sort photos into <code>images/YYYY/MM</code> using their capture date (EXIF)</label>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="organize-by-music-tags" />
+        <label for="organize-by-music-tags">Sort music into <code>music/Artist/Album</code> using ID3 tags</label>
+      </div>
+      <div class="toggle-row" id="similar-images-row">
+        <input type="checkbox" id="find-similar-images" />
+        <label for="find-similar-images">Flag visually similar photos (near-duplicates, not just byte-identical ones)</label>
+      </div>
+      <div class="empty-hint">Files without usable tags/EXIF data just fall back to their plain category folder.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Unknown file types</h2>
+      <div class="toggle-row">
+        <input type="checkbox" id="use-llm" />
+        <label for="use-llm">Ask a local LLM to guess the category for files we can't recognize by extension</label>
+      </div>
+      <div id="llm-settings" class="hidden">
+        <div class="llm-row">
+          <div>
+            <label class="field-label">API URL</label>
+            <input type="url" id="llm-url" value="http://localhost:1234/api/v1/chat" />
+          </div>
+          <div>
+            <label class="field-label">Model</label>
+            <input type="text" id="llm-model" value="gemma-3-4b-it" />
+          </div>
+        </div>
+        <div class="actions-row">
+          <button class="btn btn-small" id="btn-test-llm">Test connection</button>
+          <span class="empty-hint" id="llm-test-result"></span>
+        </div>
+      </div>
+      <div class="empty-hint">Unknown extensions are batched into a single request. Anything you manually recategorize is remembered for next time, so this gets smarter as you use it.</div>
+    </div>
+
+    <div class="actions-row">
+      <button class="btn btn-primary" id="btn-start-scan" disabled>Scan folders</button>
+    </div>
+  </div>
+
+  <!-- PROGRESS VIEW -->
+  <div id="view-progress" class="hidden">
+    <div class="panel">
+      <h2 id="progress-phase">Scanning&hellip;</h2>
+      <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-fill" style="width:0%"></div></div>
+      <div class="progress-text" id="progress-text"></div>
+    </div>
+  </div>
+
+  <!-- RESULTS VIEW -->
+  <div id="view-results" class="hidden">
+    <div class="panel">
+      <h2>Summary</h2>
+      <div class="summary-grid" id="summary-grid"></div>
+    </div>
+
+    <div id="projects-panel" class="panel hidden">
+      <h2>Detected code projects <span class="count" id="proj-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">These will be copied intact into <code>coded_programs/</code>, not split into other categories. Uncheck any you'd rather leave untouched.</div>
+      <div id="projects-list"></div>
+    </div>
+
+    <div id="themed-panel" class="panel hidden">
+      <h2>Detected human-organized folders <span class="count" id="themed-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">Mostly one file type, so the folder itself moves in as one clean unit. Anything that didn't belong got pulled out and will be sorted into its own correct category separately. Uncheck any you'd rather leave completely untouched.</div>
+      <div id="themed-list"></div>
+    </div>
+
+    <div id="duplicates-panel" class="panel hidden">
+      <h2>Duplicate files <span class="count" id="dup-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">These files have identical content. Choose whether to keep every copy (renamed) or merge them into one and remove the rest.</div>
+      <div id="duplicates-list"></div>
+    </div>
+
+    <div id="similar-panel" class="panel hidden">
+      <h2>Visually similar photos <span class="count" id="similar-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">Not byte-identical, but they look alike (e.g. resized or re-compressed copies). Nothing is auto-resolved &mdash; review and exclude/recategorize as you see fit.</div>
+      <div id="similar-list"></div>
+    </div>
+
+    <div id="junk-panel" class="panel hidden">
+      <h2>Cleanup &mdash; folders &amp; files to delete <span class="count" id="junk-count">0</span></h2>
+      <div class="empty-hint" style="margin-bottom:10px;">Never scanned or categorized &mdash; permanently deleted from the source when you confirm, not copied to the destination.</div>
+      <div class="report-list" id="junk-list"></div>
+    </div>
+
+    <div class="panel">
+      <div class="cat-toolbar">
+        <h2 style="margin:0;">Files by category</h2>
+        <input type="text" id="file-search" placeholder="Search filenames&hellip;" />
+      </div>
+      <div id="bulk-toolbar" class="bulk-toolbar hidden">
+        <span id="bulk-count">0 selected</span>
+        <select class="cat-select" id="bulk-category-select"></select>
+        <button class="btn btn-small" id="btn-bulk-apply-category">Apply category</button>
+        <button class="btn btn-small" id="btn-bulk-exclude">Exclude</button>
+        <button class="btn btn-small" id="btn-bulk-include">Include</button>
+        <button class="btn btn-small" id="btn-bulk-clear">Clear selection</button>
+      </div>
+      <div id="categories-list"></div>
+    </div>
+
+    <div id="deletion-warning" class="panel hidden" style="border-color:#5a2a32;">
+      <h2 style="color:var(--red);">&#9888; This will permanently delete some files &mdash; cannot be rolled back</h2>
+      <div id="deletion-warning-list" style="font-size:0.85rem; color:var(--text);"></div>
+      <div class="empty-hint" style="margin-top:6px;">Everything else (moved files and folders) can be rolled back afterward from History &amp; Undo. These specific items cannot, because their content is gone, not just relocated.</div>
+    </div>
+
+    <div class="actions-row">
+      <button class="btn" id="btn-cancel-results">Start over</button>
+      <button class="btn btn-primary" id="btn-confirm-move">Confirm &amp; move files</button>
+    </div>
+  </div>
+
+  <!-- REPORT VIEW -->
+  <div id="view-report" class="hidden">
+    <div class="panel">
+      <h2>Done</h2>
+      <div class="summary-grid" id="report-summary"></div>
+      <div id="report-permanent-warning" class="hidden" style="color:var(--red); font-size:0.85rem; margin-top:6px;"></div>
+      <div class="actions-row" style="margin-top:10px;">
+        <a class="btn btn-small" id="report-tree-before-link" href="#" target="_blank">View folder structure before (JSON)</a>
+        <a class="btn btn-small" id="report-tree-after-link" href="#" target="_blank">View folder structure after (JSON)</a>
+      </div>
+    </div>
+    <div class="panel" id="report-errors-panel">
+      <h2>Errors <span class="count" id="report-error-count">0</span></h2>
+      <div class="report-list" id="report-errors-list"></div>
+    </div>
+    <div class="panel" id="report-projects-panel">
+      <h2>Projects moved intact</h2>
+      <div class="report-list" id="report-projects-list"></div>
+    </div>
+    <div class="panel" id="report-themed-panel">
+      <h2>Human-organized folders moved intact</h2>
+      <div class="report-list" id="report-themed-list"></div>
+    </div>
+    <div class="panel">
+      <h2>Moved files</h2>
+      <div class="report-list" id="report-moved-list"></div>
+    </div>
+    <div class="actions-row">
+      <button class="btn" id="btn-undo-this-run">Roll back this run</button>
+      <button class="btn btn-primary" id="btn-new-run">Start a new run</button>
+    </div>
+  </div>
+
+  <!-- HISTORY VIEW -->
+  <div id="view-history" class="hidden">
+    <div class="panel">
+      <h2>Run history &amp; rollback</h2>
+      <div class="empty-hint" style="margin-bottom:10px;">Rolling back moves files/folders back to where they came from. Files deleted for being exact duplicates (merged), or as node_modules/junk cleanup, are gone for good and can't be brought back &mdash; only their record remains in the folder-structure snapshot below.</div>
+      <div id="history-list"></div>
+    </div>
+    <div class="actions-row">
+      <button class="btn" id="btn-close-history">Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- Folder browser modal -->
+<div id="browse-modal" class="modal-backdrop hidden">
+  <div class="modal">
+    <h3 id="browse-title">Choose a folder</h3>
+    <div class="drives-row" id="browse-drives"></div>
+    <div class="breadcrumb" id="browse-current"></div>
+    <div class="manual-path-row">
+      <input type="text" id="browse-manual-path" placeholder="Or type/paste a path, e.g. D:\Media or /mnt/data" />
+      <button class="btn btn-small" id="browse-manual-go">Go</button>
+    </div>
+    <div class="dir-list" id="browse-list"></div>
+    <div class="modal-footer">
+      <button class="btn btn-small" id="browse-up">&uarr; Up</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" id="browse-cancel">Cancel</button>
+        <button class="btn btn-primary" id="browse-select">Select this folder</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

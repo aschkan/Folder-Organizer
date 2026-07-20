@@ -94,28 +94,44 @@
     </div>
 
     <div class="panel">
-      <h2>Unknown file types</h2>
+      <h2>Local AI (LLM)</h2>
       <div class="toggle-row">
         <input type="checkbox" id="use-llm" />
-        <label for="use-llm">Ask a local LLM to guess the category for files we can't recognize by extension</label>
+        <label for="use-llm">Use a local AI model to categorize unknown files, recognize program/database/website folders, decide which files are strays, and do a final review of the whole plan</label>
       </div>
       <div id="llm-settings" class="hidden">
         <div class="llm-row">
           <div>
-            <label class="field-label">API URL</label>
-            <input type="url" id="llm-url" value="http://localhost:1234/api/v1/chat" />
+            <label class="field-label">Provider</label>
+            <select id="llm-provider" class="cat-select" style="width:100%;">
+              <option value="lmstudio">LM Studio</option>
+              <option value="ollama">Ollama</option>
+              <option value="openai">OpenAI-compatible (AirLLM, llama.cpp, vLLM…)</option>
+              <option value="custom">Custom ({model, system_prompt, input})</option>
+            </select>
           </div>
           <div>
             <label class="field-label">Model</label>
             <input type="text" id="llm-model" value="gemma-3-4b-it" />
           </div>
         </div>
+        <div class="llm-row">
+          <div style="flex:1;">
+            <label class="field-label">Server URL (base or full endpoint)</label>
+            <input type="url" id="llm-url" value="http://localhost:1234" style="width:100%;" />
+          </div>
+        </div>
+        <div class="toggle-row" style="margin-top:10px;">
+          <input type="checkbox" id="ai-extract-strays" checked />
+          <label for="ai-extract-strays">Send each detected folder's full file list to the AI to pull out genuine stray files (a PDF in a photo album, a personal file inside a program) &mdash; slower, but more accurate</label>
+        </div>
         <div class="actions-row">
           <button class="btn btn-small" id="btn-test-llm">Test connection</button>
           <span class="empty-hint" id="llm-test-result"></span>
         </div>
+        <div class="empty-hint" style="margin-top:8px;">💡 Runs entirely on your machine &mdash; it only costs time, not money. Whether it uses your GPU or CPU is set inside your LLM app (LM Studio / Ollama / etc.); it works on CPU-only machines too, just slower. LM Studio &amp; OpenAI-compatible servers usually listen on <code>:1234</code>/<code>:8080</code>; Ollama on <code>:11434</code>.</div>
       </div>
-      <div class="empty-hint">Unknown extensions are batched into a single request. Anything you manually recategorize is remembered for next time, so this gets smarter as you use it.</div>
+      <div class="empty-hint">Anything you manually recategorize is remembered for next time, so this gets smarter even without the AI.</div>
     </div>
 
     <div class="actions-row">

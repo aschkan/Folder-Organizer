@@ -11,7 +11,7 @@ const { createJob, getJob, deleteJob, jobs: jobsMap } = require('./lib/jobStore'
 const { runScan } = require('./lib/scanner');
 const { buildPlan, executePlan, undoRun } = require('./lib/mover');
 const { knownCategories } = require('./lib/categorize');
-const { testConnection, DEFAULT_URL, DEFAULT_MODEL } = require('./lib/llm');
+const { testConnection, DEFAULT_URL, DEFAULT_MODEL, DEFAULT_PROVIDER, PROVIDERS } = require('./lib/llm');
 const { listDrives } = require('./lib/drives');
 const { learnRule, getAllRules, deleteRule } = require('./lib/learnedRules');
 const { sharpAvailable } = require('./lib/perceptualHash');
@@ -64,12 +64,18 @@ app.get('/api/drives', async (req, res) => {
 // ---------- Capabilities / LLM test ----------
 
 app.get('/api/capabilities', (req, res) => {
-  res.json({ perceptualHashing: sharpAvailable });
+  res.json({
+    perceptualHashing: sharpAvailable,
+    // Local LLM backends the user can choose from, with their default URLs.
+    providers: Object.entries(PROVIDERS).map(([id, p]) => ({ id, defaultUrl: p.defaultUrl })),
+    defaultProvider: DEFAULT_PROVIDER,
+    defaultModel: DEFAULT_MODEL,
+  });
 });
 
 app.post('/api/llm/test', async (req, res) => {
-  const { url, model } = req.body || {};
-  const result = await testConnection(url || DEFAULT_URL, model || DEFAULT_MODEL);
+  const { provider, url, model } = req.body || {};
+  const result = await testConnection({ provider: provider || DEFAULT_PROVIDER, url: url || DEFAULT_URL, model: model || DEFAULT_MODEL });
   res.json(result);
 });
 
@@ -100,7 +106,7 @@ app.get('/api/scan', (req, res) => {
 
 app.post('/api/scan', async (req, res) => {
   const {
-    sources, destination, useLLM, llmUrl, llmModel,
+    sources, destination, useLLM, llmProvider, llmUrl, llmModel, aiExtractStrays,
     ignoreNodeModules, ignoreJunkFolders, detectProjects, detectThemedFolders,
     organizeByDate, organizeByMusicTags, findSimilarImages,
   } = req.body || {};
@@ -135,8 +141,11 @@ app.post('/api/scan', async (req, res) => {
     sources: resolvedSources,
     destination: resolvedDest,
     useLLM: !!useLLM,
+    llmProvider: llmProvider || DEFAULT_PROVIDER,
     llmUrl: llmUrl || DEFAULT_URL,
     llmModel: llmModel || DEFAULT_MODEL,
+    aiExtractStrays: aiExtractStrays !== false, // default ON when the LLM is enabled
+
     ignoreNodeModules: !!ignoreNodeModules,
     ignoreJunkFolders: !!ignoreJunkFolders,
     detectProjects: detectProjects !== false, // default ON - this is the safety-critical one

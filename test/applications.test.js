@@ -175,3 +175,37 @@ test('a detected application is moved intact into destination/applications/<name
   assert.equal(report.projectsMoved.length, 1);
   assert.equal(report.moved[0].category, 'applications');
 });
+
+test('a stray file the AI flagged inside an app is pulled out, and the app moves without it', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'fo-appstray-'));
+  const dest = path.join(root, 'dest');
+  const appDir = path.join(root, 'src', 'Dumpper');
+  await fsp.mkdir(path.join(appDir, 'sub'), { recursive: true });
+  await fsp.writeFile(path.join(appDir, 'Dumpper.exe'), 'MZ');
+  await fsp.writeFile(path.join(appDir, 'engine.dll'), 'lib');
+  const strayPath = path.join(appDir, 'sub', 'my-invoice.pdf');
+  await fsp.writeFile(strayPath, 'personal');
+
+  const job = {
+    destination: dest,
+    files: new Map(),
+    duplicateGroups: new Map(),
+    themedFolders: [],
+    projects: [{
+      id: 'p1', name: 'Dumpper', absPath: appDir, type: 'Application',
+      destCategory: 'applications', isApplication: true, junkDirsFound: [],
+      excluded: false, strayFileIds: ['s'],
+    }],
+    ignoredNodeModulesDirs: [], ignoredJunkDirs: [], ignoredJunkFiles: [],
+  };
+  job.files.set('s', {
+    id: 's', name: 'my-invoice.pdf', ext: 'pdf', absPath: strayPath, category: 'documents',
+    subPath: null, excluded: false, projectId: 'p1',
+  });
+
+  await confirmJob(job);
+
+  assert.ok(fs.existsSync(path.join(dest, 'documents', 'my-invoice.pdf')), 'the stray was sorted into documents/');
+  assert.ok(fs.existsSync(path.join(dest, 'applications', 'Dumpper', 'Dumpper.exe')), 'the app moved intact');
+  assert.ok(!fs.existsSync(path.join(dest, 'applications', 'Dumpper', 'sub', 'my-invoice.pdf')), 'the stray did not travel with the app');
+});

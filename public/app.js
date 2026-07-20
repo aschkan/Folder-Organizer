@@ -100,12 +100,25 @@ $('#use-llm').addEventListener('change', (e) => {
   $('#llm-settings').classList.toggle('hidden', !e.target.checked);
 });
 
+const PROVIDER_DEFAULT_URLS = {
+  lmstudio: 'http://localhost:1234',
+  ollama: 'http://localhost:11434',
+  openai: 'http://localhost:8080',
+  custom: 'http://localhost:1234/api/v1/chat',
+};
+
+$('#llm-provider').addEventListener('change', (e) => {
+  // Prefill the sensible default URL for the chosen backend (user can still edit it).
+  $('#llm-url').value = PROVIDER_DEFAULT_URLS[e.target.value] || '';
+});
+
 $('#btn-test-llm').addEventListener('click', async () => {
+  const provider = $('#llm-provider').value;
   const url = $('#llm-url').value.trim();
   const model = $('#llm-model').value.trim();
   $('#llm-test-result').textContent = 'Testing...';
   try {
-    const result = await api('POST', '/api/llm/test', { url, model });
+    const result = await api('POST', '/api/llm/test', { provider, url, model });
     $('#llm-test-result').textContent = result.ok
       ? `Connected. Sample reply: "${(result.sample || '').slice(0, 60)}"`
       : `Failed: ${result.error}`;
@@ -250,8 +263,10 @@ $('#btn-start-scan').addEventListener('click', async () => {
       sources,
       destination,
       useLLM: $('#use-llm').checked,
+      llmProvider: $('#llm-provider').value,
       llmUrl: $('#llm-url').value.trim(),
       llmModel: $('#llm-model').value.trim(),
+      aiExtractStrays: $('#ai-extract-strays').checked,
       detectProjects: $('#detect-projects').checked,
       detectThemedFolders: $('#detect-themed-folders').checked,
       ignoreNodeModules: $('#ignore-node-modules').checked,

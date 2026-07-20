@@ -23,9 +23,10 @@ function dirents(spec) {
   }));
 }
 
-test('detectApplicationFolder: a launcher exe is a strong application signal', () => {
+test('detectApplicationFolder: a lone .exe is a WEAK signal (its companions decide)', () => {
   const sig = detectApplicationFolder(dirents({ 'tor-browser.exe': 'file', 'readme.txt': 'file' }), 'Tor Browser');
-  assert.equal(sig.strength, 'strong');
+  assert.equal(sig.strength, 'weak');
+  assert.equal(sig.reason, 'launcher');
 });
 
 test('detectApplicationFolder: several shared libraries are a strong signal', () => {
@@ -43,18 +44,48 @@ test('detectApplicationFolder: a plain media folder is not an application', () =
   assert.equal(sig, null);
 });
 
-test('detectApplicationFolder: a big container with one stray .exe is NOT an application', () => {
-  // e.g. a Desktop full of project folders that happens to contain one Dumpper.exe
-  const spec = { 'Dumpper.exe': 'file', 'notes.txt': 'file' };
-  for (let i = 0; i < 8; i++) spec[`project${i}`] = 'dir';
-  const sig = detectApplicationFolder(dirents(spec), 'Desktop');
-  assert.equal(sig, null, 'a folder of many subfolders + one exe must not be locked as one app');
+test('a portable app (exe + its own resource files, no dll) is kept intact offline, not shredded', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'fo-portable-'));
+  const app = path.join(root, 'src', 'Dumpper');
+  await fsp.mkdir(app, { recursive: true });
+  await fsp.writeFile(path.join(app, 'Dumpper.exe'), 'MZ');       // launcher
+  // several notification sounds - would each be dragged into music/ by the old logic
+  for (let i = 0; i < 6; i++) await fsp.writeFile(path.join(app, `notify${i}.wav`), `snd${i}`);
+  await fsp.writeFile(path.join(app, 'settings.ini'), 'cfg');     // resource (config)
+  await fsp.writeFile(path.join(app, 'data.dat'), 'dat');         // resource (data)
+
+  const job = {
+    id: 'p', sources: [path.join(root, 'src')], destination: path.join(root, 'dest'),
+    useLLM: false, ignoreNodeModules: true, ignoreJunkFolders: true,
+    detectProjects: true, detectThemedFolders: true,
+    organizeByDate: false, organizeByMusicTags: false, findSimilarImages: false,
+  };
+  await runScan(job);
+
+  const unit = job.projects.find((p) => p.name === 'Dumpper');
+  assert.ok(unit, 'the portable app is kept intact');
+  assert.equal(unit.destCategory, 'applications');
+  assert.equal(job.files.size, 0, 'none of the app internals (exe/wav/ini/dat) are extracted');
+  assert.equal(job.themedFolders.length, 0, 'it is not treated as a themed folder either');
 });
 
-test('detectApplicationFolder: many unrelated loose files + one exe is NOT an application', () => {
-  const spec = { 'tool.exe': 'file' };
-  for (let i = 0; i < 25; i++) spec[`doc${i}.pdf`] = 'file';
-  assert.equal(detectApplicationFolder(dirents(spec), 'stuff'), null);
+test('a documents folder that merely contains one installer.exe is NOT locked as an app (offline)', async () => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'fo-drawer-'));
+  const drawer = path.join(root, 'src', 'Papers');
+  await fsp.mkdir(drawer, { recursive: true });
+  for (let i = 0; i < 25; i++) await fsp.writeFile(path.join(drawer, `doc${i}.pdf`), `p${i}`);
+  await fsp.writeFile(path.join(drawer, 'installer.exe'), 'MZ');
+
+  const job = {
+    id: 'd', sources: [path.join(root, 'src')], destination: path.join(root, 'dest'),
+    useLLM: false, ignoreNodeModules: true, ignoreJunkFolders: true,
+    detectProjects: true, detectThemedFolders: true,
+    organizeByDate: false, organizeByMusicTags: false, findSimilarImages: false,
+  };
+  await runScan(job);
+
+  assert.equal(job.projects.find((p) => p.name === 'Papers'), undefined, 'a doc folder with a stray exe is not one app');
+  assert.ok(job.files.size >= 25, 'its documents are categorized individually');
 });
 
 test('a source root with a stray .exe is scanned normally, not swallowed as one application', async () => {

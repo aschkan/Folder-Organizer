@@ -129,6 +129,29 @@
           <button class="btn btn-small" id="btn-test-llm">Test connection</button>
           <span class="empty-hint" id="llm-test-result"></span>
         </div>
+
+        <div class="toggle-row" style="margin-top:14px;">
+          <input type="checkbox" id="thermal-enabled" />
+          <label for="thermal-enabled">🌡️ Cooldown mode &mdash; pause the AI work when the CPU/GPU gets too hot, then resume automatically once it cools</label>
+        </div>
+        <div id="thermal-settings" class="hidden">
+          <div class="llm-row">
+            <div>
+              <label class="field-label">Pause above (°C)</label>
+              <input type="number" id="thermal-max" value="85" min="45" max="110" style="width:100%;" />
+            </div>
+            <div>
+              <label class="field-label">Resume below (°C)</label>
+              <input type="number" id="thermal-resume" value="72" min="30" max="105" style="width:100%;" />
+            </div>
+          </div>
+          <div class="actions-row">
+            <button class="btn btn-small" id="btn-check-temp" type="button">Check current temperature</button>
+            <span class="empty-hint" id="temp-readout"></span>
+          </div>
+          <div class="empty-hint" style="margin-top:6px;">Reads NVIDIA GPUs via <code>nvidia-smi</code>, CPU via the OS sensors (Linux <code>/sys</code>, Windows WMI). If your machine's temperature can't be read, cooldown simply does nothing &mdash; it never blocks a scan.</div>
+        </div>
+
         <div class="empty-hint" style="margin-top:8px;">💡 Runs entirely on your machine &mdash; it only costs time, not money. Whether it uses your GPU or CPU is set inside your LLM app (LM Studio / Ollama / etc.); it works on CPU-only machines too, just slower. LM Studio &amp; OpenAI-compatible servers usually listen on <code>:1234</code>/<code>:8080</code>; Ollama on <code>:11434</code>.</div>
       </div>
       <div class="empty-hint">Anything you manually recategorize is remembered for next time, so this gets smarter even without the AI.</div>
@@ -146,6 +169,7 @@
       <div class="progress-bar-track"><div class="progress-bar-fill" id="progress-fill" style="width:0%"></div></div>
       <div class="progress-text" id="progress-text"></div>
       <div class="empty-hint" id="progress-durability" style="margin-top:8px;">You can safely close this &mdash; if the app or your PC shuts down mid-run, it will pick up exactly where it left off next time you open it.</div>
+      <div class="empty-hint" id="progress-temps" style="margin-top:6px;"></div>
     </div>
     <div class="panel">
       <div class="cat-toolbar">

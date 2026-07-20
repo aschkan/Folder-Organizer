@@ -18,6 +18,7 @@ const { sharpAvailable } = require('./lib/perceptualHash');
 const persistence = require('./lib/persistence');
 const { snapshotTreesToFile, streamSnapshot } = require('./lib/treeSnapshot');
 const { logJob } = require('./lib/jobLog');
+const { readTemps } = require('./lib/thermal');
 
 const app = express();
 app.use(express.json());
@@ -73,6 +74,15 @@ app.get('/api/capabilities', (req, res) => {
   });
 });
 
+// Live CPU/GPU temperatures (best-effort; { available:false } if this machine can't be read).
+app.get('/api/thermal', async (req, res) => {
+  try {
+    res.json(await readTemps());
+  } catch (err) {
+    res.json({ available: false, error: err.message });
+  }
+});
+
 app.post('/api/llm/test', async (req, res) => {
   const { provider, url, model } = req.body || {};
   const result = await testConnection({ provider: provider || DEFAULT_PROVIDER, url: url || DEFAULT_URL, model: model || DEFAULT_MODEL });
@@ -108,8 +118,26 @@ app.post('/api/scan', async (req, res) => {
   const {
     sources, destination, useLLM, llmProvider, llmUrl, llmModel, aiExtractStrays,
     ignoreNodeModules, ignoreJunkFolders, detectProjects, detectThemedFolders,
-    organizeByDate, organizeByMusicTags, findSimilarImages,
+    organizeByDate, organizeByMusicTags, findSimilarImages, thermal,
   } = req.body || {};
+
+  const clamp = (v, def, lo, hi) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def;
+  };
+  let thermalCfg = { enabled: false };
+  if (thermal && thermal.enabled) {
+    const maxTempC = clamp(thermal.maxTempC, 85, 45, 110);
+    let resumeTempC = clamp(thermal.resumeTempC, maxTempC - 10, 30, 105);
+    if (resumeTempC >= maxTempC) resumeTempC = maxTempC - 5; // keep hysteresis
+    thermalCfg = {
+      enabled: true,
+      maxTempC,
+      resumeTempC,
+      pollMs: Math.max(2000, clamp(thermal.pollSeconds, 5, 2, 120) * 1000),
+      maxWaitMs: Math.max(30000, clamp(thermal.maxWaitMinutes, 10, 1, 120) * 60000),
+    };
+  }
 
   if (!Array.isArray(sources) || sources.length === 0) {
     return res.status(400).json({ error: 'At least one source folder is required.' });
@@ -145,6 +173,9 @@ app.post('/api/scan', async (req, res) => {
     llmUrl: llmUrl || DEFAULT_URL,
     llmModel: llmModel || DEFAULT_MODEL,
     aiExtractStrays: aiExtractStrays !== false, // default ON when the LLM is enabled
+    thermal: thermalCfg,
+    temps: null,
+    cooling: null,
 
     ignoreNodeModules: !!ignoreNodeModules,
     ignoreJunkFolders: !!ignoreJunkFolders,
@@ -177,6 +208,8 @@ app.get('/api/scan/:jobId/status', (req, res) => {
     progress: job.progress,
     error: job.error,
     log: (job.log || []).slice(-200),
+    temps: job.temps || null,
+    cooling: job.cooling || null,
     runId: job.runId || null,
     // Once a move finishes, hand the report straight back through the poll so the
     // frontend can render the report view without a second round-trip.

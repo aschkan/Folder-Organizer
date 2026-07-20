@@ -112,6 +112,24 @@ $('#llm-provider').addEventListener('change', (e) => {
   $('#llm-url').value = PROVIDER_DEFAULT_URLS[e.target.value] || '';
 });
 
+$('#thermal-enabled').addEventListener('change', (e) => {
+  $('#thermal-settings').classList.toggle('hidden', !e.target.checked);
+});
+
+$('#btn-check-temp').addEventListener('click', async () => {
+  $('#temp-readout').textContent = 'Checking…';
+  try {
+    const t = await api('GET', '/api/thermal');
+    if (!t.available) { $('#temp-readout').textContent = "Couldn't read this machine's temperature (cooldown will do nothing)."; return; }
+    const parts = [];
+    if (t.cpuC != null) parts.push(`CPU ${t.cpuC}°C`);
+    if (t.gpuC != null) parts.push(`GPU ${t.gpuC}°C`);
+    $('#temp-readout').textContent = `Now: ${parts.join(', ')}`;
+  } catch (err) {
+    $('#temp-readout').textContent = err.message;
+  }
+});
+
 $('#btn-test-llm').addEventListener('click', async () => {
   const provider = $('#llm-provider').value;
   const url = $('#llm-url').value.trim();
@@ -267,6 +285,11 @@ $('#btn-start-scan').addEventListener('click', async () => {
       llmUrl: $('#llm-url').value.trim(),
       llmModel: $('#llm-model').value.trim(),
       aiExtractStrays: $('#ai-extract-strays').checked,
+      thermal: {
+        enabled: $('#thermal-enabled').checked,
+        maxTempC: Number($('#thermal-max').value),
+        resumeTempC: Number($('#thermal-resume').value),
+      },
       detectProjects: $('#detect-projects').checked,
       detectThemedFolders: $('#detect-themed-folders').checked,
       ignoreNodeModules: $('#ignore-node-modules').checked,
@@ -289,7 +312,9 @@ const PHASE_LABELS = {
   listing: 'Listing files & detecting projects…',
   categorizing: 'Categorizing files…',
   metadata: 'Reading photo/music metadata…',
+  ai_review: 'AI reviewing which files belong to each folder…',
   polishing: 'Asking the LLM to review & polish every file…',
+  cooling: '🌡️ Paused to let the system cool down…',
   hashing: 'Checking for duplicates…',
   similarity: 'Comparing photos for near-duplicates…',
   planning: 'Building the move plan…',
@@ -318,6 +343,18 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+function renderTemps(temps, cooling) {
+  const el = $('#progress-temps');
+  if (!el) return;
+  if (!temps || (temps.cpuC == null && temps.gpuC == null)) { el.textContent = ''; return; }
+  const parts = [];
+  if (temps.cpuC != null) parts.push(`CPU ${temps.cpuC}°C`);
+  if (temps.gpuC != null) parts.push(`GPU ${temps.gpuC}°C`);
+  el.textContent = cooling
+    ? `🌡️ Cooling down — ${parts.join(', ')} (resuming once below ${cooling.resumeTempC}°C)`
+    : `🌡️ ${parts.join(', ')}`;
+}
+
 async function pollStatus() {
   clearTimeout(pollTimer);
   try {
@@ -327,6 +364,7 @@ async function pollStatus() {
 
     $('#progress-phase').textContent = PHASE_LABELS[phase] || (isMoving ? 'Moving files…' : 'Working…');
     renderLog(status.log);
+    renderTemps(status.temps, status.cooling);
 
     if (isMoving) {
       const moved = status.progress?.moved || 0;
